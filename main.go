@@ -45,6 +45,7 @@ func init() {
 	PublicDir = filepath.Join(pwd, "public")
 	PostsDir = filepath.Join(pwd, "posts")
 	TemplatesDir = filepath.Join(pwd, "templates")
+	initBF()
 }
 
 func storeRssURL() {

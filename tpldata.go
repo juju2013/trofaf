@@ -18,6 +18,8 @@ var (
 	ErrEmptyPost          = fmt.Errorf("empty post file")
 	ErrInvalidFrontMatter = fmt.Errorf("invalid front matter")
 	ErrMissingFrontMatter = fmt.Errorf("missing front matter")
+	bfExtensions          = 0
+	bfRender              blackfriday.Renderer
 
 	// Lookup table to find the format based on the length of the date in the front matter
 	pubDtFmt = map[int]string{
@@ -44,6 +46,22 @@ type PostData struct {
 	Next    *PostData
 	D       TemplateData
 	Content template.HTML
+}
+
+// Initialize a custom HTML render
+func initBF() {
+	bfExtensions |= blackfriday.EXTENSION_NO_INTRA_EMPHASIS
+	bfExtensions |= blackfriday.EXTENSION_TABLES
+	bfExtensions |= blackfriday.EXTENSION_FENCED_CODE
+	bfExtensions |= blackfriday.EXTENSION_AUTOLINK
+	bfExtensions |= blackfriday.EXTENSION_STRIKETHROUGH
+	bfExtensions |= blackfriday.EXTENSION_SPACE_HEADERS
+
+	htmlFlags := 0
+	htmlFlags |= blackfriday.HTML_USE_XHTML
+	htmlFlags |= blackfriday.HTML_USE_SMARTYPANTS
+	htmlFlags |= blackfriday.HTML_SMARTYPANTS_FRACTIONS
+	bfRender = blackfriday.HtmlRenderer(htmlFlags, "", "")
 }
 
 // All Posts readed, ready to be generated, make site Index (inter-link) here
@@ -156,7 +174,7 @@ func newPost(fi os.FileInfo) (*PostData, error) {
 	if err = s.Err(); err != nil {
 		return nil, err
 	}
-	res := blackfriday.MarkdownCommon(buf.Bytes())
+	res := blackfriday.Markdown(buf.Bytes(), bfRender, bfExtensions)
 	lp.Content = template.HTML(res)
 	return &lp, nil
 }
