@@ -13,12 +13,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/amber"
+	"github.com/juju2013/amber"
 )
 
 var (
-	postTpl   *template.Template // The one and only compiled post template
-	postTplNm = "post.amber"     // The amber post template file name (native Go are compiled using ParseGlob)
+	//postTpl   *template.Template // The one and only compiled post template
+	postTpls  map[string]*template.Template // [templateName]=*compiledTemplate
+	postTplNm = "post.amber"                // The amber post template file name (native Go are compiled using ParseGlob)
 
 	// Special files in the public directory, that must not be deleted
 	specFiles = map[string]struct{}{
@@ -48,7 +49,7 @@ func init() {
 }
 
 // This type is a slice of *LongPost that implements the sort.Interface, to sort in PubTime order.
-type sortablePosts []*LongPost
+type sortablePosts []*PostData
 
 func (s sortablePosts) Len() int           { return len(s) }
 func (s sortablePosts) Less(i, j int) bool { return s[i].PubTime.Before(s[j].PubTime) }
@@ -66,24 +67,16 @@ func filter(fi []os.FileInfo) []os.FileInfo {
 	return fi
 }
 
-// Compile the Post template.
-func compileTemplates() error {
-	ap := filepath.Join(TemplatesDir, postTplNm)
-	if _, err := os.Stat(ap); os.IsNotExist(err) {
-		// Amber post template does not exist, compile the native Go templates
-		postTpl, err = template.New("templates").Funcs(funcs).ParseGlob(filepath.Join(TemplatesDir, "*.html"))
-		if err != nil {
-			return fmt.Errorf("error parsing templates: %s", err)
-		}
-		postTplNm = "post"
-	} else {
-		c := amber.New()
-		if err := c.ParseFile(ap); err != nil {
-			return fmt.Errorf("error parsing templates: %s", err)
-		}
-		if postTpl, err = c.Compile(); err != nil {
-			return fmt.Errorf("error compiling templates: %s", err)
-		}
+// Compile the tempalte directory
+func compileTemplates() (err error) {
+	var exists bool
+	postTpls, err = amber.CompileDir(TemplatesDir, amber.DefaultDirOptions, amber.DefaultOptions)
+	if err != nil {
+		return
+	}
+	postTplNm = "post"
+	if _, exists = postTpls[postTplNm]; !exists {
+		return fmt.Errorf("error parsing templates: %s", err)
 	}
 	return nil
 }
@@ -109,16 +102,17 @@ func clearPublicDir() error {
 	return nil
 }
 
-func getPosts(fis []os.FileInfo) (all, recent []*LongPost) {
-	all = make([]*LongPost, 0, len(fis))
+func getPosts(fis []os.FileInfo) (all, recent []*PostData) {
+	all = make([]*PostData, 0, len(fis))
 	for _, fi := range fis {
-		lp, err := newLongPost(fi)
+		lp, err := newPost(fi)
 		if err == nil {
 			all = append(all, lp)
 		} else {
 			log.Printf("post ignored: %s; error: %s\n", fi.Name(), err)
 		}
 	}
+
 	// Then sort in reverse order (newer first)
 	sort.Sort(sort.Reverse(sortablePosts(all)))
 	cnt := Options.RecentPostsCount
@@ -150,41 +144,56 @@ func generateSite() error {
 		return err
 	}
 	// Generate the static files
+	index := siteIndex(all)
 	for i, p := range all {
-		td := newTemplateData(p, i, recent, all)
-		if err := generateFile(td, i == 0); err != nil {
-			return err
+		if err := generateFile(p, i == index); err != nil {
+			fmt.Printf("DEBUG: template %v genration failed (%v)\n", p.D["Slug"], err)
 		}
 	}
 	// Generate the RSS feed
-	td := newTemplateData(nil, 0, recent, nil)
-	return generateRss(td)
+	return generateRss(recent)
 }
 
 // Creates the rss feed from the recent posts.
-func generateRss(td *TemplateData) error {
-	r := NewRss(td.SiteName, td.TagLine, Options.BaseURL)
+func generateRss(td []*PostData) error {
+	r := NewRss(Options.SiteName, Options.TagLine, Options.BaseURL)
 	base, err := url.Parse(Options.BaseURL)
 	if err != nil {
 		return fmt.Errorf("error parsing base URL: %s", err)
 	}
-	for _, p := range td.Recent {
-		u, err := base.Parse(p.Slug)
+	for _, p := range td {
+		u, err := base.Parse((p.D["Slug"]))
 		if err != nil {
 			return fmt.Errorf("error parsing post URL: %s", err)
 		}
-		r.Channels[0].AppendItem(NewRssItem(p.Title, u.String(), p.Description, p.Author, "", p.PubTime))
+		r.Channels[0].AppendItem(NewRssItem(
+			p.D["Title"],
+			u.String(),
+			p.D["Description"],
+			p.D["Author"],
+			"",
+			p.PubTime))
 	}
 	return r.WriteToFile(filepath.Join(PublicDir, "rss"))
 }
 
 // Generate the static HTML file for the post identified by the index.
-func generateFile(td *TemplateData, idx bool) error {
+func generateFile(td *PostData, idx bool) error {
 	var w io.Writer
 
-	fw, err := os.Create(filepath.Join(PublicDir, td.Post.Slug))
+	// check if template exists
+	tplName := td.D["Template"]
+	var tpl *template.Template
+	var ex bool
+
+	if tpl, ex = postTpls[tplName]; !ex {
+		return fmt.Errorf("Template not found: %s", tplName)
+	}
+	slug := td.D["Slug"]
+	fw, err := os.Create(filepath.Join(PublicDir, slug))
+
 	if err != nil {
-		return fmt.Errorf("error creating static file %s: %s", td.Post.Slug, err)
+		return fmt.Errorf("error creating static file %s: %s", slug, err)
 	}
 	defer fw.Close()
 
@@ -198,5 +207,5 @@ func generateFile(td *TemplateData, idx bool) error {
 		defer idxw.Close()
 		w = io.MultiWriter(fw, idxw)
 	}
-	return postTpl.ExecuteTemplate(w, postTplNm, td)
+	return tpl.ExecuteTemplate(w, tplName+".amber", td)
 }

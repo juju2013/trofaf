@@ -32,49 +32,38 @@ var (
 
 // The TemplateData structure contains all the relevant information passed to the
 // template to generate the static HTML file.
-type TemplateData struct {
-	SiteName string
-	TagLine  string
-	RssURL   string
-	Post     *LongPost
-	Recent   []*LongPost
-	Prev     *ShortPost
-	Next     *ShortPost
-}
+type TemplateData map[string]string
 
-// Create a new TemplateData for the specified post.
-func newTemplateData(p *LongPost, i int, r []*LongPost, all []*LongPost) *TemplateData {
-	td := &TemplateData{
-		SiteName: Options.SiteName,
-		TagLine:  Options.TagLine,
-		RssURL:   RssURL,
-		Post:     p,
-		Recent:   r,
-	}
-	if i > 0 {
-		td.Prev = all[i-1].ShortPost
-	}
-	if i < len(all)-1 {
-		td.Next = all[i+1].ShortPost
-	}
-	return td
-}
-
-// The ShortPost structure defines the basic metadata of a post.
-type ShortPost struct {
-	Slug        string
-	Author      string
-	Title       string
-	Description string
-	Lang        string
-	PubTime     time.Time
-	ModTime     time.Time
-}
-
-// The LongPost structure adds the parsed content of the post to the embedded ShortPost information.
-type LongPost struct {
-	*ShortPost
+// Post data contains all the relevant information about a post (ie. meta data)
+// and also a TemplateData
+type PostData struct {
+	PubTime time.Time
+	ModTime time.Time
+	Recent  []*PostData
+	Prev    *PostData
+	Next    *PostData
+	D       TemplateData
 	Content template.HTML
+}
+
+// All Posts readed, ready to be generated, make site Index (inter-link) here
+// `all` is an ordered array of all posts to generate
+// return the index post
+func siteIndex(all []*PostData) (index int) {
+	index = 0
+	l := len(all)
+	for i := l - 1; i >= 0; i-- {
+		if i > 0 {
+			all[i].Prev = all[i-1]
+		}
+		if i < l-1 {
+			all[i].Next = all[i+1]
+		}
+		if _, ex := all[i].D["IndexPage"]; ex {
+			index = i
+		}
+	}
+	return
 }
 
 // Replace special characters to form a valid slug (post path)
@@ -87,8 +76,17 @@ func getSlug(fnm string) string {
 
 // Read the front matter from the post. If there is no front matter, this is
 // not a valid post.
-func readFrontMatter(s *bufio.Scanner) (map[string]string, error) {
-	m := make(map[string]string)
+func readFrontMatter(s *bufio.Scanner) (TemplateData, error) {
+	// make a clone of SiteData
+	m := make(TemplateData)
+	for k, v := range SiteMeta.meta {
+		m[k] = v
+	}
+
+	// defaut template name if not specified
+	m["Template"] = "default"
+
+	// scan the front matter
 	infm := false
 	for s.Scan() {
 		l := strings.Trim(s.Text(), " ")
@@ -118,36 +116,37 @@ func readFrontMatter(s *bufio.Scanner) (map[string]string, error) {
 	return nil, ErrEmptyPost
 }
 
-// Create a LongPost from the specified FileInfo.
-func newLongPost(fi os.FileInfo) (*LongPost, error) {
+// Create a Post from the specified FileInfo.
+func newPost(fi os.FileInfo) (*PostData, error) {
 	f, err := os.Open(filepath.Join(PostsDir, fi.Name()))
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	s := bufio.NewScanner(f)
-	m, err := readFrontMatter(s)
+	td, err := readFrontMatter(s)
 	if err != nil {
 		return nil, err
 	}
 
 	slug := getSlug(fi.Name())
 	pubdt := fi.ModTime()
-	if dt, ok := m["Date"]; ok && len(dt) > 0 {
+	if dt, ok := td["Date"]; ok && len(dt) > 0 {
 		pubdt, err = time.Parse(pubDtFmt[len(dt)], dt)
 		if err != nil {
 			return nil, err
 		}
 	}
-	sp := &ShortPost{
-		slug,
-		m["Author"],
-		m["Title"],
-		m["Description"],
-		m["Lang"],
-		pubdt,
-		fi.ModTime(),
+
+	lp := PostData{
+		D: td,
 	}
+
+	td["Slug"] = slug
+	td["PubTime"] = pubdt.Format("2006-01-02")
+	lp.PubTime = pubdt
+	lp.ModTime = fi.ModTime()
+	td["ModTime"] = lp.ModTime.Format("15:04")
 
 	// Read rest of file
 	buf := bytes.NewBuffer(nil)
@@ -158,9 +157,6 @@ func newLongPost(fi os.FileInfo) (*LongPost, error) {
 		return nil, err
 	}
 	res := blackfriday.MarkdownCommon(buf.Bytes())
-	lp := &LongPost{
-		sp,
-		template.HTML(res),
-	}
-	return lp, nil
+	lp.Content = template.HTML(res)
+	return &lp, nil
 }

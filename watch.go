@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,12 @@ const (
 	// Sometimes many events can be triggered in succession for the same file
 	// (i.e. Create followed by Modify, etc.). No need to rush to generate
 	// the HTML, just wait for it to calm down before processing.
-	watchEventDelay = 10 * time.Second
+	watchEventDelay = 1 * time.Second
+)
+
+var (
+	tempo    = make(chan time.Time, 100)
+	generate = make(chan bool, 1)
 )
 
 // Create and start a watcher, watching both the posts and the templates directories.
@@ -22,6 +28,7 @@ func startWatcher() *fsnotify.Watcher {
 	if err != nil {
 		log.Fatal("FATAL ", err)
 	}
+	go bufGenSite()
 	go watch(w)
 	// Watch the posts directory
 	if err = w.Watch(PostsDir); err != nil {
@@ -41,7 +48,6 @@ func startWatcher() *fsnotify.Watcher {
 // next and previous post, etc.). It could be fine-tuned based on what data we give
 // to the templates, but for now, lazy approach.
 func watch(w *fsnotify.Watcher) {
-	var delay <-chan time.Time
 	for {
 		select {
 		case ev := <-w.Event:
@@ -51,15 +57,28 @@ func watch(w *fsnotify.Watcher) {
 			// Care only about changes to markdown files in the Posts directory, or to
 			// Amber or Native Go template files in the Templates directory.
 			if strings.HasPrefix(ev.Name, PostsDir) && ext == ".md" {
-				delay = time.After(watchEventDelay)
+				tempo <- time.Now()
 			} else if strings.HasPrefix(ev.Name, TemplatesDir) && (ext == ".amber" || ext == ".html") {
-				delay = time.After(watchEventDelay)
+				tempo <- time.Now()
 			}
 
 		case err := <-w.Error:
 			log.Println("WATCH ERROR ", err)
+		}
+	}
+}
 
-		case <-delay:
+// Generate site with a buffered watch/expire channel
+func bufGenSite() {
+	hitLast := time.Now()
+	for {
+		select {
+		case hitNow := <-tempo:
+			if hitNow.Sub(hitLast) > watchEventDelay {
+				go chExpire(generate)
+			}
+			hitLast = hitNow
+		case <-generate:
 			if err := generateSite(); err != nil {
 				log.Println("ERROR generating site: ", err)
 			} else {
@@ -67,4 +86,9 @@ func watch(w *fsnotify.Watcher) {
 			}
 		}
 	}
+}
+
+func chExpire(ch chan<- bool) {
+	time.Sleep(watchEventDelay)
+	ch <- true
 }

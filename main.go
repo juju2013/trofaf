@@ -20,14 +20,20 @@ type options struct {
 	BaseURL          string `short:"b" long:"base-url" description:"the base URL of the web site" default:"http://localhost"`
 }
 
+type siteMeta struct {
+	meta        TemplateData
+	recentPosts int
+}
+
 var (
 	// The one and only Options parsed from the command-line
 	Options options
 
-	PublicDir    string // Public directory path
-	PostsDir     string // Posts directory path
-	TemplatesDir string // Templates directory path
-	RssURL       string // The RSS feed URL, parsed only once and stored for convenience
+	PublicDir    string   // Public directory path
+	PostsDir     string   // Posts directory path
+	TemplatesDir string   // Templates directory path
+	RssURL       string   // The RSS feed URL, parsed only once and stored for convenience
+	SiteMeta     siteMeta // The site meta data can be used by posts
 )
 
 func init() {
@@ -53,15 +59,25 @@ func storeRssURL() {
 	RssURL = r.String()
 }
 
+func copyMeta() {
+	SiteMeta.recentPosts = Options.RecentPostsCount
+	SiteMeta.meta = make(TemplateData)
+	SiteMeta.meta["BaseURL"] = Options.BaseURL
+	SiteMeta.meta["SiteName"] = Options.SiteName
+	SiteMeta.meta["TagLine"] = Options.TagLine
+	SiteMeta.meta["RssURL"] = RssURL
+}
+
 func main() {
 	// Parse the flags
 	_, err := flags.Parse(&Options)
 	if err == nil { // err != nil prints the usage automatically
 		storeRssURL()
+		copyMeta()
 		if !Options.NoGen {
 			// Generate the site
 			if err := generateSite(); err != nil {
-				log.Fatal("FATAL ", err)
+				log.Println("Error ", err)
 			}
 			// Terminate if set to generate only
 			if Options.GenOnly {
